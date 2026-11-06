@@ -97,30 +97,36 @@ RUN groupadd -f wheel && \
 # 4c. 彻底锁死 root 密码（Elemental 原生阶段钩子）
 # ----------------------------------------------------
 RUN mkdir -p /system/oem && \
-printf 'name: "Root Password Enforcer"\n\
-stages:\n\
-fs.after:\n\
-- name: "Set root password hash"\n\
-commands:\n\
-- usermod -p '\''$6$3HzcniSmLcqcdDAD$XaGco3Esx69ux6SgsKCac/TWld3/L8ADC1I7eZRtaMvsPfNeb0cb6doyXP2qeyw6DOjVK.BluxZfQcAD/qR6e.'\'' root\n' > /system/oem/01_root_pw.yaml
+    cat <<'EOF' > /system/oem/01_root_pw.yaml
+name: "Root Password Enforcer"
+stages:
+  fs.after:
+    - name: "Set root password hash"
+      commands:
+        - usermod -p '$6$3HzcniSmLcqcdDAD$XaGco3Esx69ux6SgsKCac/TWld3/L8ADC1I7eZRtaMvsPfNeb0cb6doyXP2qeyw6DOjVK.BluxZfQcAD/qR6e.' root
+EOF
 
 # ----------------------------------------------------
 # 5. 固化 Elemental 分区配置（Btrfs 原生快照）
 # ----------------------------------------------------
 RUN mkdir -p /etc/elemental && \
-printf 'install:\n\
-snapshotter:\n\
-type: btrfs\n\
-partitions:\n\
-recovery:\n\
-size: 8192\n\
-filesystem: btrfs\n\
-state:\n\
-size: 30720\n\
-filesystem: btrfs\n\
-persistent:\n\
-size: 0\n\
-filesystem: btrfs\n' > /etc/elemental/config.yaml
+    cat <<'EOF' > /etc/elemental/config.yaml
+install:
+  snapshotter:
+    type: btrfs
+  partitions:
+    recovery:
+      size: 8192
+      filesystem: btrfs
+    state:
+      size: 30720
+      filesystem: btrfs
+    persistent:
+      size: 0
+      filesystem: btrfs
+EOF
+
+
 
 # ----------------------------------------------------
 # 6. 注入持久化目录初始化脚本与 Systemd 服务 (解决空寻址与桌面失忆)
