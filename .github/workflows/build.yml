@@ -9,8 +9,8 @@ on:
       - '.gitignore'         # 忽略 gitignore 修改
       - 'docs/**'            # 忽略纯文档目录
   schedule:
-    # 每天 UTC 19:08 (北京时间次日凌晨 3:08) 定时触发
-    - cron: '08 19 * * *'
+    # 每天 UTC 17:01 (北京时间次日凌晨 01:01) 定时触发
+    - cron: '01 17 * * *'
   workflow_dispatch:
 
 env:
