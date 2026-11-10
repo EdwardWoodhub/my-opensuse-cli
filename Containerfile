@@ -61,6 +61,7 @@ RUN ARCH=$(uname -m); \
         parted \
         podman \
         python3 \
+        regclient \
         rsync \
         sed \
         squashfs \
