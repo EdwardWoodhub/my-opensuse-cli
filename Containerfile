@@ -101,6 +101,12 @@ RUN groupadd -f wheel && \
     echo 'Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' >> /etc/sudoers
 
 # ----------------------------------------------------
+# 4b. 全局 PATH 补齐 (为所有交互式 Shell 暴露 /usr/sbin 与 /sbin)
+# ----------------------------------------------------
+RUN echo 'export PATH="$PATH:/usr/sbin:/sbin"' > /etc/profile.d/custom-sbin-path.sh && \
+    chmod 644 /etc/profile.d/custom-sbin-path.sh
+
+# ----------------------------------------------------
 # 4c. 彻底锁死 root 密码（Elemental 原生阶段钩子）
 # ----------------------------------------------------
 RUN mkdir -p /system/oem && \
