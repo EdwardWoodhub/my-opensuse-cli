@@ -28,6 +28,7 @@ RUN ARCH=$(uname -m); \
     fi; \
     zypper --non-interactive --gpg-auto-import-keys install --no-recommends -- \
         ${ADD_PKGS} \
+        bandwhich \
         btop \
         btrfsprogs \
         curl \
@@ -51,6 +52,7 @@ RUN ARCH=$(uname -m); \
         lvm2 \
         mtools \
         nano \
+        nethogs \
         NetworkManager \
         openssh-clients \
         openssh-server \
