@@ -44,6 +44,7 @@ RUN ARCH=$(uname -m); \
         grub2-${ARCH}-efi \
         gzip \
         htop \
+        iotop \
         iproute2 \
         kernel-default \
         less \
@@ -65,6 +66,7 @@ RUN ARCH=$(uname -m); \
         systemd \
         tar \
         timezone \
+        tmux \
         uv \
         vim \
         which \
