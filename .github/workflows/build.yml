@@ -94,8 +94,7 @@ jobs:
 
           ISO_PATH="build-output/${{ env.CURRENT_ISO_NAME }}.iso"
           
-          
-          
+                   
           # 计算 ISO 真实字节大小与阈值 (1.5GB = 1572864000 字节)
           FILE_SIZE=$(stat -c%s "${ISO_PATH}")
           MAX_SIZE=1572864000
@@ -119,7 +118,42 @@ jobs:
             echo "IS_SPLIT=false" >> $GITHUB_ENV
           fi
 
-      # 4. 发布独立的 GitHub Release（保留全部历史记录，不作删除）
+      # 3. 计算镜像各层大小，并导出环境变量（注意：TARGET_IMAGE 脱敏）
+      - name: Calculate Image Size & Write to Release Summary
+        env:
+          ACR_REGISTRY: ${{ secrets.ALIYUN_ACR_REGISTRY }}
+          ACR_NAMESPACE: ${{ secrets.ALIYUN_ACR_NAMESPACE }}
+          IMAGE_NAME: my-opensuse-cli-vm
+          IMAGE_TAG: latest
+        run: |
+          TARGET_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+          # 登录 ACR
+          echo "${{ secrets.ALIYUN_ACR_PASSWORD }}" | regctl registry login "${ACR_REGISTRY}" -u "${{ secrets.ALIYUN_ACR_USERNAME }}" --pass-stdin
+
+          # 控制台打印明细
+          regctl image manifest "${TARGET_IMAGE}" \
+            --format '{{range $i, $l := .Layers}}{{printf "Layer %02d: %8.2f MB  (%s)\n" $i (div $l.Size 1048576.0) $l.Digest}}{{end}}'
+
+          # 计算总大小和层数
+          TOTAL_MB=$(regctl image manifest "${TARGET_IMAGE}" --format '{{range .Layers}}{{.Size}}{{println}}{{end}}' | awk '{sum+=$1} END {printf "%.2f", sum/1024/1024}')
+          TOTAL_GB=$(awk -v mb="$TOTAL_MB" 'BEGIN {printf "%.2f", mb/1024}')
+          LAYER_COUNT=$(regctl image manifest "${TARGET_IMAGE}" --format '{{len .Layers}}')
+
+          # 写入 Job Summary 看板
+          cat <<EOF >> $GITHUB_STEP_SUMMARY
+          ### 📦 镜像发布与体积报告
+          - **镜像名称**: \`${IMAGE_NAME}:${IMAGE_TAG}\`
+          - **镜像层数**: \`${LAYER_COUNT}\` 层
+          - **网络传输体积**: **${TOTAL_MB} MB** (~${TOTAL_GB} GB)
+          EOF
+
+          # 导出为环境变量供下一个 Release 步骤使用
+          echo "IMAGE_SIZE_MB=${TOTAL_MB}" >> $GITHUB_ENV
+          echo "IMAGE_SIZE_GB=${TOTAL_GB}" >> $GITHUB_ENV
+          echo "IMAGE_LAYER_COUNT=${LAYER_COUNT}" >> $GITHUB_ENV
+
+      # 4. 发布独立的 GitHub Release（直接融合原内容与镜像体积元数据）
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -135,6 +169,8 @@ jobs:
             - **Commit SHA:** `${{ github.sha }}`
             - **OCI Image (Latest):** `${{ env.FULL_IMAGE_NAME }}:latest`
             - **OCI Image (Immutable Tag):** `${{ env.FULL_IMAGE_NAME }}:${{ env.RELEASE_TAG }}`
+            - **Image Layers:** `${{ env.IMAGE_LAYER_COUNT }}` 层
+            - **Compressed Size:** **${{ env.IMAGE_SIZE_MB }} MB** (~${{ env.IMAGE_SIZE_GB }} GB)
             - **Split Files:** `${{ env.IS_SPLIT }}`
 
             ${{ env.IS_SPLIT == 'true' && format('#### 拼接 ISO 命令：
@@ -148,7 +184,8 @@ jobs:
             ```', env.CURRENT_ISO_NAME) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      
+      
       # =========================================================================
       # 5. 末尾：登录并同步镜像到阿里云 ACR
       # =========================================================================
@@ -197,61 +234,4 @@ jobs:
           echo "Pushing to Aliyun ACR ..."
           docker push "$ALIYUN_TAG_IMAGE"
           docker push "$ALIYUN_LATEST_IMAGE"
-      
-      
-      
-      - name: Calculate Image Size & Write to Release Summary
-        env:
-          ACR_REGISTRY: ${{ secrets.ALIYUN_ACR_REGISTRY }}
-          ACR_NAMESPACE: ${{ secrets.ALIYUN_ACR_NAMESPACE }}
-          IMAGE_NAME: my-opensuse-cli-vm
-          IMAGE_TAG: latest
-        run: |
-          # 拼接完整目标镜像路径
-          TARGET_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-          # 登录 ACR（使用已设定的用户名与密码变量）
-          echo "${{ secrets.ALIYUN_ACR_PASSWORD }}" | regctl registry login "${ACR_REGISTRY}" -u "${{ secrets.ALIYUN_ACR_USERNAME }}" --pass-stdin
-
-          echo "==================== 获取镜像层详情 ===================="
-          
-          # 1. 控制台逐层打印各层大小 (MB)
-          regctl image manifest "${TARGET_IMAGE}" \
-            --format '{{range $i, $l := .Layers}}{{printf "Layer %02d: %8.2f MB  (%s)\n" $i (div $l.Size 1048576.0) $l.Digest}}{{end}}'
-
-          # 2. 计算各层总字节数并换算为 MB / GB
-          TOTAL_MB=$(regctl image manifest "${TARGET_IMAGE}" --format '{{range .Layers}}{{.Size}}{{println}}{{end}}' | awk '{sum+=$1} END {printf "%.2f", sum/1024/1024}')
-          TOTAL_GB=$(awk -v mb="$TOTAL_MB" 'BEGIN {printf "%.2f", mb/1024}')
-          LAYER_COUNT=$(regctl image manifest "${TARGET_IMAGE}" --format '{{len .Layers}}')
-
-          echo "=========================================================="
-          echo "计算结果: 共 ${LAYER_COUNT} 层，总大小为 ${TOTAL_MB} MB (${TOTAL_GB} GB)"
-
-          # 3. 写入 GitHub Actions 页面看板 ($GITHUB_STEP_SUMMARY)
-          # 使用隐藏/相对路径展示，不泄露完整 Registry 域名
-          cat <<EOF >> $GITHUB_STEP_SUMMARY
-          ### 📦 镜像发布与体积报告
-          - **镜像名称**: \`${IMAGE_NAME}:${IMAGE_TAG}\`
-          - **总层数**: \`${LAYER_COUNT}\` 层
-          - **网络传输体积**: **${TOTAL_MB} MB** (~${TOTAL_GB} GB)
-          EOF
-
-          # 4. 导出为全局环境变量，供后续发布步骤直接读取
-          echo "IMAGE_SIZE_MB=${TOTAL_MB}" >> $GITHUB_ENV
-          echo "IMAGE_SIZE_GB=${TOTAL_GB}" >> $GITHUB_ENV
-          echo "IMAGE_LAYER_COUNT=${LAYER_COUNT}" >> $GITHUB_ENV
-      
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          body: |
-            ## 🚀 发布元数据
-            - **镜像名称**: `my-opensuse-cli-vm`
-            - **镜像标签**: `${{ github.ref_name }}`
-            - **镜像层数**: `${{ env.IMAGE_LAYER_COUNT }}` 层
-            - **传输压缩体积**: **${{ env.IMAGE_SIZE_MB }} MB** (~${{ env.IMAGE_SIZE_GB }} GB)
-            
-            > 注：镜像已自动同步至私有/个人容器注册表。
-      
       
