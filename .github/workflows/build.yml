@@ -169,10 +169,12 @@ jobs:
           echo "${{ secrets.ALIYUN_ACR_PASSWORD }}" | regctl registry login "${ACR_REGISTRY}" -u "${{ secrets.ALIYUN_ACR_USERNAME }}" --pass-stdin
 
           echo "==================== 镜像层大小详情 ===================="
+          # 1. 提取每层的 Size 和 Digest，交给 awk 格式化并做除法换算
           regctl image manifest "${TARGET_IMAGE}" \
-            --format '{{range $i, $l := .Layers}}{{printf "Layer %02d: %8.2f MB  (%s)\n" $i (div $l.Size 1048576.0) $l.Digest}}{{end}}'
+            --format '{{range .Layers}}{{.Size}} {{.Digest}}{{println}}{{end}}' | \
+            awk '{printf "Layer %02d: %8.2f MB  (%s)\n", NR, $1/1024/1024, $2}'
 
-          # 计算总大小和层数
+          # 2. 计算总大小和总层数
           TOTAL_MB=$(regctl image manifest "${TARGET_IMAGE}" --format '{{range .Layers}}{{.Size}}{{println}}{{end}}' | awk '{sum+=$1} END {printf "%.2f", sum/1024/1024}')
           TOTAL_GB=$(awk -v mb="$TOTAL_MB" 'BEGIN {printf "%.2f", mb/1024}')
           LAYER_COUNT=$(regctl image manifest "${TARGET_IMAGE}" --format '{{len .Layers}}')
@@ -180,7 +182,7 @@ jobs:
           echo "=========================================================="
           echo "计算结果: 共 ${LAYER_COUNT} 层，总大小为 ${TOTAL_MB} MB (${TOTAL_GB} GB)"
 
-          # 写入 GitHub Actions 页面看板 (Job Summary) - 不泄露域名
+          # 3. 写入 GitHub Actions 页面看板 (Job Summary)
           cat <<EOF >> $GITHUB_STEP_SUMMARY
           ### 📦 镜像发布与体积报告
           - **镜像名称**: \`${OCI_IMAGE_NAME}:latest\`
@@ -188,11 +190,12 @@ jobs:
           - **网络传输体积**: **${TOTAL_MB} MB** (~${TOTAL_GB} GB)
           EOF
 
-          # 导出为环境变量供后续 Release 步骤读取
+          # 4. 导出为全局环境变量供后续 Release 步骤读取
           echo "IMAGE_SIZE_MB=${TOTAL_MB}" >> $GITHUB_ENV
           echo "IMAGE_SIZE_GB=${TOTAL_GB}" >> $GITHUB_ENV
           echo "IMAGE_LAYER_COUNT=${LAYER_COUNT}" >> $GITHUB_ENV
-
+      
+      
       # 7. 发布 GitHub Release（附带 ISO 产物与镜像体积说明）
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
