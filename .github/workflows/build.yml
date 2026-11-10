@@ -64,7 +64,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. 构建并推送不可变 OCI 操作系统镜像
+      # 2. 构建并推送不可变 OCI 操作系统镜像到 GHCR
       - name: Build and push OS Container Image
         uses: docker/build-push-action@v5
         with:
@@ -94,7 +94,6 @@ jobs:
 
           ISO_PATH="build-output/${{ env.CURRENT_ISO_NAME }}.iso"
           
-                   
           # 计算 ISO 真实字节大小与阈值 (1.5GB = 1572864000 字节)
           FILE_SIZE=$(stat -c%s "${ISO_PATH}")
           MAX_SIZE=1572864000
@@ -118,20 +117,58 @@ jobs:
             echo "IS_SPLIT=false" >> $GITHUB_ENV
           fi
 
-      # 3. 计算镜像各层大小，并导出环境变量（注意：TARGET_IMAGE 脱敏）
+      # 4. 同步镜像到阿里云 ACR
+      - name: Log in to Aliyun ACR
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+      - name: Push Image to Aliyun ACR
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        env:
+          FULL_IMAGE_NAME: ${{ env.FULL_IMAGE_NAME }}
+          OCI_IMAGE_NAME: ${{ env.OCI_IMAGE_NAME }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          ACR_REGISTRY: ${{ secrets.ALIYUN_ACR_REGISTRY }}
+          ACR_NAMESPACE: ${{ secrets.ALIYUN_ACR_NAMESPACE }}
+        run: |
+          set -e
+          if [ -z "$ACR_REGISTRY" ] || [ -z "$ACR_NAMESPACE" ]; then
+            echo "Error: ALIYUN_ACR_REGISTRY or ALIYUN_ACR_NAMESPACE secret is not set!"
+            exit 1
+          fi
+
+          GHCR_TAG_IMAGE="${FULL_IMAGE_NAME}:${RELEASE_TAG}"
+          ALIYUN_TAG_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${OCI_IMAGE_NAME}:${RELEASE_TAG}"
+          ALIYUN_LATEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${OCI_IMAGE_NAME}:latest"
+
+          echo "Tagging and pushing images to Aliyun ACR..."
+          docker tag "$GHCR_TAG_IMAGE" "$ALIYUN_TAG_IMAGE"
+          docker tag "$GHCR_TAG_IMAGE" "$ALIYUN_LATEST_IMAGE"
+
+          docker push "$ALIYUN_TAG_IMAGE"
+          docker push "$ALIYUN_LATEST_IMAGE"
+
+      # 5. 安装 regctl 工具
+      - name: Set up regctl
+        uses: regclient/actions/regctl-installer@main
+
+      # 6. 计算镜像各层大小，并写入 Job Summary 与环境变量
       - name: Calculate Image Size & Write to Release Summary
         env:
           ACR_REGISTRY: ${{ secrets.ALIYUN_ACR_REGISTRY }}
           ACR_NAMESPACE: ${{ secrets.ALIYUN_ACR_NAMESPACE }}
-          IMAGE_NAME: my-opensuse-cli-vm
-          IMAGE_TAG: latest
+          OCI_IMAGE_NAME: ${{ env.OCI_IMAGE_NAME }}
         run: |
-          TARGET_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
+          TARGET_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${OCI_IMAGE_NAME}:latest"
 
           # 登录 ACR
           echo "${{ secrets.ALIYUN_ACR_PASSWORD }}" | regctl registry login "${ACR_REGISTRY}" -u "${{ secrets.ALIYUN_ACR_USERNAME }}" --pass-stdin
 
-          # 控制台打印明细
+          echo "==================== 镜像层大小详情 ===================="
           regctl image manifest "${TARGET_IMAGE}" \
             --format '{{range $i, $l := .Layers}}{{printf "Layer %02d: %8.2f MB  (%s)\n" $i (div $l.Size 1048576.0) $l.Digest}}{{end}}'
 
@@ -140,20 +177,23 @@ jobs:
           TOTAL_GB=$(awk -v mb="$TOTAL_MB" 'BEGIN {printf "%.2f", mb/1024}')
           LAYER_COUNT=$(regctl image manifest "${TARGET_IMAGE}" --format '{{len .Layers}}')
 
-          # 写入 Job Summary 看板
+          echo "=========================================================="
+          echo "计算结果: 共 ${LAYER_COUNT} 层，总大小为 ${TOTAL_MB} MB (${TOTAL_GB} GB)"
+
+          # 写入 GitHub Actions 页面看板 (Job Summary) - 不泄露域名
           cat <<EOF >> $GITHUB_STEP_SUMMARY
           ### 📦 镜像发布与体积报告
-          - **镜像名称**: \`${IMAGE_NAME}:${IMAGE_TAG}\`
+          - **镜像名称**: \`${OCI_IMAGE_NAME}:latest\`
           - **镜像层数**: \`${LAYER_COUNT}\` 层
           - **网络传输体积**: **${TOTAL_MB} MB** (~${TOTAL_GB} GB)
           EOF
 
-          # 导出为环境变量供下一个 Release 步骤使用
+          # 导出为环境变量供后续 Release 步骤读取
           echo "IMAGE_SIZE_MB=${TOTAL_MB}" >> $GITHUB_ENV
           echo "IMAGE_SIZE_GB=${TOTAL_GB}" >> $GITHUB_ENV
           echo "IMAGE_LAYER_COUNT=${LAYER_COUNT}" >> $GITHUB_ENV
 
-      # 4. 发布独立的 GitHub Release（直接融合原内容与镜像体积元数据）
+      # 7. 发布 GitHub Release（附带 ISO 产物与镜像体积说明）
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -184,54 +224,3 @@ jobs:
             ```', env.CURRENT_ISO_NAME) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      
-      # =========================================================================
-      # 5. 末尾：登录并同步镜像到阿里云 ACR
-      # =========================================================================
-      - name: Log in to Aliyun ACR
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ALIYUN_ACR_REGISTRY }}
-          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
-          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
-
-      - name: Push Image to Aliyun ACR
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-        env:
-          FULL_IMAGE_NAME: ${{ env.FULL_IMAGE_NAME }}
-          OCI_IMAGE_NAME: ${{ env.OCI_IMAGE_NAME }}
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
-          ACR_REGISTRY: ${{ secrets.ALIYUN_ACR_REGISTRY }}
-          ACR_NAMESPACE: ${{ secrets.ALIYUN_ACR_NAMESPACE }}
-        run: |
-          set -e
-          # 检查必要密钥是否配置
-          if [ -z "$ACR_REGISTRY" ] || [ -z "$ACR_NAMESPACE" ]; then
-            echo "Error: ALIYUN_ACR_REGISTRY or ALIYUN_ACR_NAMESPACE secret is not set!"
-            exit 1
-          fi
-
-          # 构建完整镜像名
-          GHCR_TAG_IMAGE="${FULL_IMAGE_NAME}:${RELEASE_TAG}"
-          ALIYUN_TAG_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${OCI_IMAGE_NAME}:${RELEASE_TAG}"
-          ALIYUN_LATEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${OCI_IMAGE_NAME}:latest"
-
-          echo "GHCR Image Source: $GHCR_TAG_IMAGE"
-          echo "Aliyun Target Tag: $ALIYUN_TAG_IMAGE"
-
-          # 如果本地没有该镜像，兜底拉取一次
-          if ! docker image inspect "$GHCR_TAG_IMAGE" >/dev/null 2>&1; then
-            echo "Local image not found, pulling $GHCR_TAG_IMAGE ..."
-            docker pull "$GHCR_TAG_IMAGE"
-          fi
-
-          echo "Tagging images for Aliyun ACR ..."
-          docker tag "$GHCR_TAG_IMAGE" "$ALIYUN_TAG_IMAGE"
-          docker tag "$GHCR_TAG_IMAGE" "$ALIYUN_LATEST_IMAGE"
-
-          echo "Pushing to Aliyun ACR ..."
-          docker push "$ALIYUN_TAG_IMAGE"
-          docker push "$ALIYUN_LATEST_IMAGE"
-      
