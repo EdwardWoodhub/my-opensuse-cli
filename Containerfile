@@ -30,6 +30,7 @@ RUN ARCH=$(uname -m); \
     fi; \
     zypper --non-interactive --gpg-auto-import-keys install --no-recommends -- \
         ${ADD_PKGS} \
+        7zip \
         bandwhich \
         btop \
         btrfsprogs \
