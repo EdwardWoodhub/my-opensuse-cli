@@ -1,5 +1,13 @@
 # 基座
 
+## 镜像拉取
+
+[openSUSE Registry](https://registry.opensuse.org/cgi-bin/cooverview)
+
+```
+podman pull registry.opensuse.org/opensuse/leap:16.0
+```
+
 ## SBOM（软件物料清单）
 
 (1) 官方提供了带 SPDX 的文件，里面列出了镜像里的包，例如：
